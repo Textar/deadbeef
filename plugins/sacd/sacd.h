@@ -18,6 +18,11 @@ typedef struct
 {
     DB_fileinfo_t info;
     uint32_t hints;
+    int current_start_lsn;
+    int current_length_lsn;
+    int current_seek;
+    int current_duration;
+    char* current_path;
 } sacd_info_t;
 
 typedef struct
@@ -199,5 +204,8 @@ typedef struct
     int length_lsn;
     int duration;
 } track_info_t;
+
+
+#define SWAP16(d) (((d) & 0xff) << 8 | (((d) >> 8) & 0xff))
 
 #endif
