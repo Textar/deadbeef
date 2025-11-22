@@ -12,6 +12,7 @@
         "array": "c",
         "string": "c",
         "string_view": "c",
-        "span": "c"
+        "span": "c",
+        "ranges": "c"
     }
 }

@@ -86,14 +86,12 @@ typedef struct {
     AVPacket pkt;
     AVFrame *frame;
     int stream_id;
-
+    int channels;
     int left_in_packet;
     int have_packet;
-
     char *buffer;
     int left_in_buffer;
     int buffer_size;
-
     int64_t startsample;
     int64_t endsample;
     int64_t currentsample;
@@ -219,21 +217,12 @@ ffmpeg_open (uint32_t hints) {
 // ensure that the buffer can contain entire frame of frame_size bytes per channel
 static int
 ensure_buffer (ffmpeg_info_t *info, int frame_size) {
-    AVCodecParameters params;
-    int ret;
-
-    ret = avcodec_parameters_from_context(&params, info->codec_context);
-    if (ret < 0) {
-        fprintf(stderr, "ffpmeg: failed to get codec context");
-        return -1;
-    }
-
-    if (!info->buffer || info->buffer_size < frame_size * params.ch_layout.nb_channels) {
+    if (!info->buffer || info->buffer_size < frame_size * info->channels) {
         if (info->buffer) {
             free (info->buffer);
             info->buffer = NULL;
         }
-        info->buffer_size = frame_size*params.ch_layout.nb_channels;
+        info->buffer_size = frame_size*info->channels;
         info->left_in_buffer = 0;
         int err = posix_memalign ((void **)&info->buffer, 16, info->buffer_size);
         if (err) {
@@ -259,6 +248,7 @@ _get_audio_codec_from_stream(AVFormatContext *format_context, int stream_index, 
     info->codec_context = avcodec_alloc_context3 (info->codec);
     info->need_to_free_codec_context = 1;
     avcodec_parameters_to_context(info->codec_context, format_context->streams[stream_index]->codecpar);
+    info->channels = format_context->streams[stream_index]->codecpar->ch_layout.nb_channels;
 #else
     if (format_context->streams[stream_index]->codec->codec_type != AVMEDIA_TYPE_AUDIO) {
         return 0;
@@ -345,16 +335,8 @@ ffmpeg_init (DB_fileinfo_t *_info, DB_playItem_t *it) {
     int bps = av_get_bytes_per_sample (info->codec_context->sample_fmt)*8;
     int samplerate = info->codec_context->sample_rate;
 
-    // Get codec parameters from context
-    AVCodecParameters params;
-    ret = avcodec_parameters_from_context(&params, info->codec_context);
-    if (ret < 0) {
-        fprintf(stderr, "ffpmeg: failed to get codec context");
-        return -1;
-    }
 
-
-    if (bps <= 0 || params.ch_layout.nb_channels <= 0 || samplerate <= 0) {
+    if (bps <= 0 || info->channels <= 0 || samplerate <= 0) {
         return -1;
     }
 
@@ -371,7 +353,7 @@ ffmpeg_init (DB_fileinfo_t *_info, DB_playItem_t *it) {
     _info->plugin = &plugin.decoder;
     _info->readpos = 0;
     _info->fmt.bps = bps;
-    _info->fmt.channels = params.ch_layout.nb_channels;
+    _info->fmt.channels = info->channels;
     _info->fmt.samplerate = samplerate;
     if (info->codec_context->sample_fmt == AV_SAMPLE_FMT_FLT || info->codec_context->sample_fmt == AV_SAMPLE_FMT_FLTP) {
         _info->fmt.is_float = 1;
@@ -464,16 +446,7 @@ ffmpeg_read (DB_fileinfo_t *_info, char *bytes, int size) {
     trace ("ffmpeg_read_int16 %d\n", size);
     ffmpeg_info_t *info = (ffmpeg_info_t*)_info;
 
-    // Get codec parameters from context
-    AVCodecParameters params;
-    int ret;
-    ret = avcodec_parameters_from_context(&params, info->codec_context);
-    if (ret < 0) {
-        fprintf(stderr, "ffpmeg: failed to get codec context");
-        return -1;
-    }
-
-    _info->fmt.channels = params.ch_layout.nb_channels;
+    _info->fmt.channels = info->channels;
     _info->fmt.samplerate = info->codec_context->sample_rate;
     _info->fmt.bps = av_get_bytes_per_sample (info->codec_context->sample_fmt) * 8;
     _info->fmt.is_dsd = 0;
@@ -565,9 +538,9 @@ ffmpeg_read (DB_fileinfo_t *_info, char *bytes, int size) {
                             (is_codec_dsd(info->codec_context->codec_id) == DSD_TYPE_MSBF && dsd_output_endian == DSD_OUTPUT_ENDIAN_LITTLE)) {
                             bit_reverse_buffer((uint8_t*)info->buffer, out_size);
                         }
-                        dsf_to_pcm_order((uint8_t*)info->buffer, out_size, params.ch_layout.nb_channels);
+                        dsf_to_pcm_order((uint8_t*)info->buffer, out_size, info->channels);
                     } else if (enable_dsd == DSD_OUTPUT_TYPE_DOP) {
-                        int channel_count = params.ch_layout.nb_channels;
+                        int channel_count = info->channels;
                         int channel_length = info->pkt.size / channel_count;
                         int frame_count = info->pkt.size / channel_count; // Divide by channel
                         out_size = frame_count * (DOP_BPS >> 3); // 8 bit most significant bits and 16 bit dsd data and 8 bit empty data.
@@ -576,14 +549,13 @@ ffmpeg_read (DB_fileinfo_t *_info, char *bytes, int size) {
                         }
                         unsigned char* out = (unsigned char*)info->buffer;
                         uint8_t magic = 0x05;
-                        uint8_t* p;
                         for (int f = 0; f < frame_count; f++) {
                             for (int c = 0; c < channel_count; c++) {
-                                p = info->pkt.data + channel_length * c + f * 2;
-                                *(out + 3) = magic;
-                                *(out + 2) = (dsd_type == DSD_TYPE_LSBF ? bit_reverse_table[*p] : *p);
-                                *(out + 1) = (dsd_type == DSD_TYPE_LSBF ? bit_reverse_table[*(p + 1)] : *(p + 1));
-                                *out = 0;
+                                uint8_t* p = info->pkt.data + f * 2;
+                                out[3] = magic;
+                                out[2] = (dsd_type == DSD_TYPE_LSBF ? bit_reverse_table[*p] : *p);
+                                out[1] = (dsd_type == DSD_TYPE_LSBF ? bit_reverse_table[*(p + 1)] : *(p + 1));
+                                out[0] = 0;
                                 out += (DOP_BPS >> 3);
                             }
                             // Change magic every frame
@@ -596,24 +568,24 @@ ffmpeg_read (DB_fileinfo_t *_info, char *bytes, int size) {
                     }
                     if (av_sample_fmt_is_planar(info->codec_context->sample_fmt)) {
                         out_size = 0;
-                        for (int c = 0; c < params.ch_layout.nb_channels; c++) {
+                        for (int c = 0; c < info->channels; c++) {
                             for (int i = 0; i < info->frame->nb_samples; i++) {
                                 if (_info->fmt.bps == 8) {
-                                    info->buffer[i*params.ch_layout.nb_channels+c] = ((int8_t *)info->frame->extended_data[c])[i];
+                                    info->buffer[i*info->channels+c] = ((int8_t *)info->frame->extended_data[c])[i];
                                     out_size++;
                                 }
                                 else if (_info->fmt.bps == 16) {
                                     int16_t outsample = ((int16_t *)info->frame->extended_data[c])[i];
-                                    ((int16_t*)info->buffer)[i*params.ch_layout.nb_channels+c] = outsample;
+                                    ((int16_t*)info->buffer)[i*info->channels+c] = outsample;
                                     out_size += 2;
                                 }
                                 else if (_info->fmt.bps == 24) {
-                                    memcpy (&info->buffer[(i*params.ch_layout.nb_channels+c)*3], &((int8_t*)info->frame->extended_data[c])[i*3], 3);
+                                    memcpy (&info->buffer[(i*info->channels+c)*3], &((int8_t*)info->frame->extended_data[c])[i*3], 3);
                                     out_size += 3;
                                 }
                                 else if (_info->fmt.bps == 32) {
                                     int32_t sample = ((int32_t *)info->frame->extended_data[c])[i];
-                                    ((int32_t*)info->buffer)[i*params.ch_layout.nb_channels+c] = sample;
+                                    ((int32_t*)info->buffer)[i*info->channels+c] = sample;
                                     out_size += 4;
                                 }
                             }
@@ -903,14 +875,6 @@ ffmpeg_insert (ddb_playlist_t *plt, DB_playItem_t *after, const char *fname) {
     trace ("ffmpeg can decode %s\n", fname);
     trace ("ffmpeg: codec=%s, stream=%d\n", codec->name, i);
 
-    // Get codec parameters from context
-    AVCodecParameters params;
-    int avcodec_parameter_ret = avcodec_parameters_from_context(&params, info.codec_context);
-    if (avcodec_parameter_ret < 0) {
-        fprintf(stderr, "ffpmeg: failed to get codec context");
-        goto error;
-    }
-
     int avcodec_open2_ret = avcodec_open2 (info.codec_context, info.codec, NULL);
     if (avcodec_open2_ret < 0) {
         trace ("ffmpeg: avcodec_open2 failed\n");
@@ -925,7 +889,7 @@ ffmpeg_insert (ddb_playlist_t *plt, DB_playItem_t *after, const char *fname) {
     trace ("ffmpeg: samplerate is %d\n", samplerate);
     trace ("ffmpeg: duration is %f\n", duration);
 
-    if (bps <= 0 || params.ch_layout.nb_channels <= 0 || samplerate <= 0) {
+    if (bps <= 0 || info.channels <= 0 || samplerate <= 0) {
         goto error;
     }
 
@@ -964,7 +928,7 @@ ffmpeg_insert (ddb_playlist_t *plt, DB_playItem_t *after, const char *fname) {
             snprintf (s, sizeof (s), "%d", bps);
         }
         deadbeef->pl_add_meta (it, ":BPS", s);
-        snprintf (s, sizeof (s), "%d", params.ch_layout.nb_channels);
+        snprintf (s, sizeof (s), "%d", info.channels);
         deadbeef->pl_add_meta (it, ":CHANNELS", s);
         if (is_codec_dsd(info.codec_context->codec_id)) {
             snprintf (s, sizeof (s), "%.4fM", (float)(samplerate * 8) / 1000000);

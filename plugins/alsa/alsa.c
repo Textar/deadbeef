@@ -152,7 +152,8 @@ palsa_set_hw_params (ddb_waveformat_t *fmt) {
     }
 
     snd_pcm_format_t sample_fmt;
-    if (plugin.fmt.is_dsd == 1) {
+    snd_pcm_type_t pcm_type = snd_pcm_type(audio);
+    if (plugin.fmt.is_dsd == 1 && pcm_type == SND_PCM_TYPE_HW) {
         int selected_dsd_index = deadbeef->conf_get_int ("alsa.dsdformat", 0);
         if (selected_dsd_index < 0 || selected_dsd_index > sizeof(supported_dsd_format)) {
             fprintf (stderr, "Invalid DSD Selection\n");
