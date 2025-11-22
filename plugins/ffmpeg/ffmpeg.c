@@ -1010,7 +1010,7 @@ ffmpeg_init_exts (void) {
     exts[0] = NULL;
 
     int n = 0;
-    if (!use_all_ext) {
+    if (use_all_ext) {
         n = add_new_exts (n, new_exts, ';');
     }
 	else {
